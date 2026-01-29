@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using OrdersApi.Models;
 using OrdersApi.Services;
+using System.Text.Json;
 
 namespace OrdersApi.Controllers;
 
@@ -9,11 +10,16 @@ namespace OrdersApi.Controllers;
 public class OrdersController : ControllerBase
 {
     private readonly IOrderService _orderService;
+    private readonly IMessagePublisher _messagePublisher;
     private readonly ILogger<OrdersController> _logger;
 
-    public OrdersController(IOrderService orderService, ILogger<OrdersController> logger)
+    public OrdersController(
+        IOrderService orderService,
+        IMessagePublisher messagePublisher,
+        ILogger<OrdersController> logger)
     {
         _orderService = orderService;
+        _messagePublisher = messagePublisher;
         _logger = logger;
     }
 
@@ -38,10 +44,10 @@ public class OrdersController : ControllerBase
         try
         {
             var order = await _orderService.GetByIdAsync(id);
-            
+
             if (order == null)
                 return NotFound($"Order with ID {id} not found");
-            
+
             return Ok(order);
         }
         catch (Exception ex)
@@ -56,7 +62,26 @@ public class OrdersController : ControllerBase
     {
         try
         {
+            // Save to database
             var createdOrder = await _orderService.CreateAsync(order);
+
+            // Publish message to RabbitMQ
+            var message = JsonSerializer.Serialize(new
+            {
+                EventType = "OrderCreated",
+                OrderId = createdOrder.Id,
+                OrderNumber = createdOrder.OrderNumber,
+                CustomerName = createdOrder.CustomerName,
+                TotalAmount = createdOrder.TotalAmount,
+                Timestamp = DateTime.UtcNow
+            });
+
+            _messagePublisher.PublishMessage(
+                exchangeName: "orders.events",
+                routingKey: "order.created",
+                message: message
+            );
+
             return CreatedAtAction(nameof(GetById), new { id = createdOrder.Id }, createdOrder);
         }
         catch (Exception ex)
@@ -72,10 +97,24 @@ public class OrdersController : ControllerBase
         try
         {
             var updated = await _orderService.UpdateAsync(id, order);
-            
+
             if (!updated)
                 return NotFound($"Order with ID {id} not found");
-            
+
+            // Publish message to RabbitMQ
+            var message = JsonSerializer.Serialize(new
+            {
+                EventType = "OrderUpdated",
+                OrderId = id,
+                Timestamp = DateTime.UtcNow
+            });
+
+            _messagePublisher.PublishMessage(
+                exchangeName: "orders.events",
+                routingKey: "order.updated",
+                message: message
+            );
+
             return NoContent();
         }
         catch (Exception ex)
@@ -91,10 +130,24 @@ public class OrdersController : ControllerBase
         try
         {
             var deleted = await _orderService.DeleteAsync(id);
-            
+
             if (!deleted)
                 return NotFound($"Order with ID {id} not found");
-            
+
+            // Publish message to RabbitMQ
+            var message = JsonSerializer.Serialize(new
+            {
+                EventType = "OrderDeleted",
+                OrderId = id,
+                Timestamp = DateTime.UtcNow
+            });
+
+            _messagePublisher.PublishMessage(
+                exchangeName: "orders.events",
+                routingKey: "order.deleted",
+                message: message
+            );
+
             return NoContent();
         }
         catch (Exception ex)
